@@ -57,7 +57,7 @@ for (i in 0:9) {  # 10 páginas para tener suficientes datos
   Sys.sleep(0.3)
 }
 
-cat("\n✅ Extracción completada. Total:", nrow(datos), "criptomonedas\n")
+cat("\n Extracción completada. Total:", nrow(datos), "criptomonedas\n")
 ```
 
 ```{r}
@@ -84,7 +84,7 @@ datos <- datos %>%
     )
   )
 
-cat("✅ Datos limpios. Registros finales:", nrow(datos), "\n")
+cat("Datos limpios. Registros finales:", nrow(datos), "\n")
 ```
 
 ```{r}
