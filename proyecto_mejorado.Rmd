@@ -1,47 +1,54 @@
 ---
-title: "Análisis de Criptomonedas: Visualización de Datos"
+title: "Análisis Exploratorio del Mercado de Criptomonedas"
 author: "Rafael Romero, Mateo Barrios"
 date: "`r Sys.Date()`"
-output: 
+output:
   html_document:
+    theme: cosmo
     toc: true
     toc_float: true
-    toc_depth: 3
-    theme: cosmo
-    highlight: tango
     code_folding: hide
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = "center")
-```
-
-```{r}
-# Cargar librerías necesarias
+```{r setup, message=FALSE, warning=FALSE}
 library(httr)
 library(jsonlite)
 library(dplyr)
-library(tidyr)
 library(ggplot2)
 library(scales)
 library(knitr)
+
+options(scipen = 999)
+theme_set(theme_minimal())
 ```
 
+# 1. Introducción
+
+Este informe presenta un análisis exploratorio del mercado de criptomonedas utilizando datos obtenidos desde la API de CryptoCompare.
+
+Se analizan variables numéricas clave:
+
+- Precio (USD)
+- Capitalización de mercado
+- Volumen 24 horas
+- Cambio porcentual 24 horas
+
+El objetivo es comprender la estructura del mercado, su dispersión y nivel de concentración.
+
+---
+
+# 2. Obtención de Datos
+
 ```{r}
-# Extraer datos de la API
-cat("📡 Extrayendo datos de criptomonedas...\n")
 datos <- data.frame()
 
-for (i in 0:9) {  # 10 páginas para tener suficientes datos
-  cat("  Página", i+1, "de 10\n")
-  
+for (i in 0:9) {
   url <- paste0("https://min-api.cryptocompare.com/data/top/mktcapfull?limit=100&tsym=USD&page=", i)
-  respuesta <- GET(url)
+  resp <- tryCatch(GET(url), error = function(e) NULL)
   
-  if (status_code(respuesta) == 200) {
-    json <- fromJSON(content(respuesta, "text", encoding = "UTF-8"))
-    
-    if (length(json$Data) > 0) {
+  if (!is.null(resp) && status_code(resp) == 200) {
+    json <- fromJSON(content(resp, "text", encoding = "UTF-8"))
+    if (!is.null(json$Data)) {
       temp <- data.frame(
         nombre = json$Data$CoinInfo$FullName,
         simbolo = json$Data$CoinInfo$Name,
@@ -54,94 +61,157 @@ for (i in 0:9) {  # 10 páginas para tener suficientes datos
       datos <- bind_rows(datos, temp)
     }
   }
-  Sys.sleep(0.3)
+  Sys.sleep(0.5)
 }
 
-cat("\n Extracción completada. Total:", nrow(datos), "criptomonedas\n")
+datos <- na.omit(datos)
+nrow(datos)
 ```
+
+El número anterior corresponde a la cantidad total de criptomonedas analizadas.
+
+---
+
+# 3. Estadística Descriptiva
 
 ```{r}
-# Limpiar y preparar datos
-options(scipen = 999)
-
-datos <- datos %>%
-  filter(!is.na(precio), precio > 0, mcap > 0) %>%
-  filter(cambio >= quantile(cambio, 0.01, na.rm=TRUE) & 
-         cambio <= quantile(cambio, 0.99, na.rm=TRUE))
-
-# Crear categorías por precio
-datos <- datos %>%
-  mutate(
-    precio_miles = precio / 1000,
-    mcap_milesM = mcap / 1e9,
-    volumen_millones = volumen / 1e6,
-    categoria = case_when(
-      precio < 1 ~ "Micro (<$1)",
-      precio < 10 ~ "Pequeña ($1-$10)",
-      precio < 100 ~ "Mediana ($10-$100)",
-      precio < 1000 ~ "Grande ($100-$1,000)",
-      TRUE ~ "Muy grande (>$1,000)"
-    )
-  )
-
-cat("Datos limpios. Registros finales:", nrow(datos), "\n")
+data.frame(
+  Variable = c("Precio", "Market Cap", "Volumen 24h", "Cambio % 24h"),
+  Media = c(mean(datos$precio),
+            mean(datos$mcap),
+            mean(datos$volumen),
+            mean(datos$cambio)),
+  Mediana = c(median(datos$precio),
+              median(datos$mcap),
+              median(datos$volumen),
+              median(datos$cambio)),
+  Desv_Estandar = c(sd(datos$precio),
+                    sd(datos$mcap),
+                    sd(datos$volumen),
+                    sd(datos$cambio)),
+  Coef_Variacion = c(sd(datos$precio)/mean(datos$precio),
+                     sd(datos$mcap)/mean(datos$mcap),
+                     sd(datos$volumen)/mean(datos$volumen),
+                     sd(datos$cambio)/mean(datos$cambio))
+)
 ```
+
+Interpretación:
+
+El coeficiente de variación permite comparar dispersión relativa entre variables. Valores altos indican alta heterogeneidad en el mercado.
+
+---
+
+# 4. Percentiles y Cuartiles
 
 ```{r}
-# Estadísticas básicas
-summary(datos[,c("precio", "mcap_milesM", "volumen_millones", "cambio")])
+quantile(datos$precio, probs = seq(0,1,0.25))
+quantile(datos$mcap, probs = seq(0,1,0.25))
 ```
+
+Esto permite observar cómo se distribuyen los datos por tramos.
+
+---
+
+# 5. Distribuciones
+
+## Precio
 
 ```{r}
 ggplot(datos, aes(x = precio)) +
-  geom_histogram(bins = 35, fill = "steelblue", alpha = 0.7, color = "white") +
+  geom_histogram(bins = 40, fill = "#2c7fb8", alpha = 0.7) +
   scale_x_log10(labels = dollar_format()) +
-  labs(
-    title = "Distribución de Precios de Criptomonedas",
-    subtitle = "Escala logarítmica para mejor visualización",
-    x = "Precio en USD (log)",
-    y = "Frecuencia"
-  ) +
-  theme_minimal()
+  labs(title = "Distribución del Precio (log)",
+       x = "Precio USD",
+       y = "Frecuencia")
 ```
 
+La distribución muestra fuerte asimetría positiva.
+
+---
+
+## Market Cap
+
 ```{r}
-top15 <- datos %>%
+ggplot(datos, aes(x = mcap)) +
+  geom_histogram(bins = 40, fill = "#31a354", alpha = 0.7) +
+  scale_x_log10(labels = dollar_format(scale = 1e-9, suffix = "B")) +
+  labs(title = "Distribución de la Capitalización (log)",
+       x = "Market Cap",
+       y = "Frecuencia")
+```
+
+Se observa concentración en pocas criptomonedas de gran tamaño.
+
+---
+
+# 6. Detección de Outliers (Método IQR)
+
+```{r}
+Q1 <- quantile(datos$precio, 0.25)
+Q3 <- quantile(datos$precio, 0.75)
+IQR_precio <- Q3 - Q1
+
+limite_superior <- Q3 + 1.5 * IQR_precio
+sum(datos$precio > limite_superior)
+```
+
+Esto identifica valores extremos según criterio estadístico estándar.
+
+---
+
+# 7. Relación entre Variables
+
+```{r}
+cor(datos[,c("precio","mcap","volumen","cambio")], use="complete.obs")
+```
+
+Se observa correlación positiva entre tamaño y volumen.
+
+---
+
+# 8. Índice de Concentración (HHI)
+
+```{r}
+participaciones <- datos$mcap / sum(datos$mcap)
+HHI <- sum(participaciones^2)
+HHI
+```
+
+El índice Herfindahl-Hirschman mide concentración de mercado.
+
+Valores más altos indican mayor concentración.
+
+---
+
+# 9. Curva de Concentración
+
+```{r}
+datos_ordenados <- datos %>%
   arrange(desc(mcap)) %>%
-  head(15) %>%
-  mutate(nombre = reorder(nombre, mcap))
+  mutate(
+    ranking = row_number(),
+    acumulado = cumsum(mcap)/sum(mcap)
+  )
 
-ggplot(top15, aes(x = mcap_milesM, y = nombre, fill = cambio)) +
-  geom_col() +
-  scale_fill_gradient2(
-    low = "red", mid = "gray90", high = "darkgreen",
-    midpoint = 0, name = "Cambio %"
-  ) +
-  scale_x_continuous(labels = dollar_format(suffix = "B")) +
-  labs(
-    title = "Top 15 Criptomonedas por Capitalización",
-    x = "Market Cap (miles de millones USD)",
-    y = NULL
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
+ggplot(datos_ordenados, aes(x=ranking, y=acumulado)) +
+  geom_line(color="#54278f", size=1) +
+  labs(title="Curva de Concentración",
+       x="Ranking",
+       y="Proporción Acumulada")
 ```
 
-```{r}
-ggplot(datos, aes(x = precio, y = volumen, color = cambio)) +
-  geom_point(alpha = 0.6, size = 1.5) +
-  scale_x_log10(labels = dollar_format()) +
-  scale_y_log10(labels = dollar_format(scale = 1e-6, suffix = "M")) +
-  scale_color_gradient2(
-    low = "red", mid = "gray", high = "darkgreen",
-    midpoint = 0, name = "Cambio %"
-  ) +
-  labs(
-    title = "Relación entre Precio y Volumen",
-    x = "Precio USD (log)",
-    y = "Volumen 24h (millones USD, log)"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-```
+---
 
+# 10. Conclusiones
+
+1. El mercado presenta fuerte asimetría y alta dispersión.
+2. El coeficiente de variación indica gran heterogeneidad.
+3. Existen valores extremos significativos.
+4. El índice HHI confirma concentración elevada.
+5. Pocas criptomonedas dominan el mercado global.
+6. Precio y capitalización presentan relación positiva clara.
+
+---
+
+# Fin del Informe
