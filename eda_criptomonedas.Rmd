@@ -1,0 +1,534 @@
+---
+title: "EDA - Mercado de Criptomonedas"
+author: "Rafael Romero, Mateo Barrios"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: hide
+    highlight: tango
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# Cargo las librerias que voy a usar
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(GGally)
+library(moments)
+library(knitr)
+library(plotly)
+library(ggrepel)
+library(treemapify)
+library(viridis)
+library(DT)
+library(cowplot)
+library(RColorBrewer)
+
+options(scipen = 999)
+```
+
+---
+
+# 1. Introducción
+
+Las criptomonedas se han convertido en uno de los activos financieros más discutidos de la última década. A diferencia de los mercados tradicionales, este ecosistema opera 24/7, es altamente volátil y está dominado por pocas monedas que concentran la mayor parte del capital.
+
+En este análisis exploratorio se trabaja con datos en tiempo real obtenidos desde la API de CryptoCompare, cubriendo las 1000 criptomonedas de mayor capitalización. El objetivo es entender la estructura del mercado: cómo se distribuyen los precios, qué tan concentrado está el capital, cómo se relacionan las variables entre sí y qué patrones de volatilidad emergen.
+
+Las preguntas que guían este análisis son:
+
+- ¿Cómo se distribuyen los precios y la capitalización? ¿Siguen alguna ley estadística conocida?
+- ¿Qué tan concentrado está el mercado? ¿Cuántas monedas controlan el grueso del capital?
+- ¿Existe correlación entre precio, capitalización y volumen?
+- ¿Hay diferencias en volatilidad según el tamaño de la moneda?
+
+---
+
+# 2. Extracción y Limpieza de Datos
+
+```{r extraccion, message=FALSE, warning=FALSE}
+datos <- data.frame()
+
+for (i in 0:9) {
+  url <- paste0(
+    "https://min-api.cryptocompare.com/data/top/mktcapfull?limit=100&tsym=USD&page=", i
+  )
+  
+  respuesta <- tryCatch(GET(url), error = function(e) NULL)
+  
+  if (!is.null(respuesta) && status_code(respuesta) == 200) {
+    json <- fromJSON(content(respuesta, "text", encoding = "UTF-8"))
+    
+    if (!is.null(json$Data) && length(json$Data) > 0) {
+      temp <- data.frame(
+        nombre  = json$Data$CoinInfo$FullName,
+        simbolo = json$Data$CoinInfo$Name,
+        precio  = json$Data$RAW$USD$PRICE,
+        mcap    = json$Data$RAW$USD$MKTCAP,
+        volumen = json$Data$RAW$USD$TOTALVOLUME24H,
+        cambio  = json$Data$RAW$USD$CHANGEPCT24HOUR,
+        stringsAsFactors = FALSE
+      )
+      datos <- bind_rows(datos, temp)
+    }
+  }
+  Sys.sleep(0.5)
+}
+
+# Elimino filas con NA y valores negativos en precio/mcap
+datos <- datos %>%
+  na.omit() %>%
+  filter(precio > 0, mcap > 0, volumen > 0)
+
+# Agrego columna de categoria segun market cap
+datos <- datos %>%
+  mutate(
+    categoria = case_when(
+      mcap > 1e11 ~ "Mega Cap",
+      mcap > 1e10 ~ "Large Cap",
+      mcap > 1e9  ~ "Mid Cap",
+      TRUE        ~ "Small Cap"
+    ),
+    categoria = factor(categoria, levels = c("Mega Cap", "Large Cap", "Mid Cap", "Small Cap"))
+  )
+```
+
+```{r resumen_datos}
+cat("Total de criptomonedas cargadas:", nrow(datos), "\n")
+cat("Rango de market cap:", dollar(min(datos$mcap)), "a", dollar(max(datos$mcap)), "\n")
+cat("Distribución por categoría:\n")
+print(table(datos$categoria))
+```
+
+---
+
+# 3. Vista General del Mercado
+
+Antes de entrar en análisis, conviene ver una tabla con las principales monedas para tener contexto.
+
+```{r tabla_top20}
+datos %>%
+  arrange(desc(mcap)) %>%
+  head(20) %>%
+  mutate(
+    Ranking = row_number(),
+    Moneda  = nombre,
+    Simbolo = simbolo,
+    Precio  = dollar(precio),
+    `Market Cap` = dollar(mcap, scale = 1e-9, suffix = "B"),
+    `Vol. 24h`   = dollar(volumen, scale = 1e-6, suffix = "M"),
+    `Cambio 24h` = paste0(round(cambio, 2), "%")
+  ) %>%
+  select(Ranking, Moneda, Simbolo, Precio, `Market Cap`, `Vol. 24h`, `Cambio 24h`) %>%
+  DT::datatable(
+    options = list(pageLength = 10, scrollX = TRUE),
+    caption  = "Top 20 Criptomonedas por Capitalización de Mercado"
+  )
+```
+
+---
+
+# 4. Treemap de Dominancia
+
+Este gráfico es uno de los más informativos para entender la estructura del mercado de forma visual. El área de cada bloque es proporcional al market cap, y el color indica la variación de precio en las últimas 24 horas.
+
+```{r treemap, fig.width=12, fig.height=7, warning=FALSE}
+top30 <- datos %>%
+  arrange(desc(mcap)) %>%
+  head(30)
+
+ggplot(top30, aes(
+  area    = mcap,
+  fill    = cambio,
+  label   = simbolo,
+  subgroup = categoria
+)) +
+  geom_treemap(color = "white", size = 2) +
+  geom_treemap_subgroup_border(color = "white", size = 4) +
+  geom_treemap_text(
+    colour   = "white",
+    place    = "centre",
+    fontface = "bold",
+    size     = 13,
+    grow     = TRUE
+  ) +
+  geom_treemap_subgroup_text(
+    place    = "topleft",
+    colour   = "white",
+    alpha    = 0.5,
+    fontface = "italic",
+    size     = 10
+  ) +
+  scale_fill_gradient2(
+    low      = "#c0392b",
+    mid      = "#ecf0f1",
+    high     = "#27ae60",
+    midpoint = 0,
+    name     = "Cambio 24h (%)"
+  ) +
+  labs(
+    title    = "Dominancia del Mercado Cripto — Top 30",
+    subtitle = "Área proporcional al Market Cap | Verde = suba | Rojo = baja"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(color = "gray40")
+  )
+```
+
+La dominancia de Bitcoin y Ethereum es evidente a primera vista. Entre las dos monedas líderes suelen concentrar más del 60% del market cap total del top 30.
+
+---
+
+# 5. Distribuciones Univariadas
+
+## 5.1 Distribución de Precios
+
+```{r dist_precio, fig.width=10, fig.height=5, warning=FALSE}
+ggplot(datos, aes(x = precio)) +
+  geom_histogram(
+    aes(y = after_stat(density)),
+    bins  = 45,
+    fill  = "#2980b9",
+    alpha = 0.75,
+    color = "white"
+  ) +
+  geom_density(color = "#e74c3c", linewidth = 1, adjust = 1.2) +
+  scale_x_log10(labels = dollar_format()) +
+  labs(
+    title    = "Distribución de Precios (Escala Logarítmica)",
+    subtitle = paste0(
+      "Asimetría: ", round(skewness(log10(datos$precio)), 2),
+      " | Curtosis: ", round(kurtosis(log10(datos$precio)), 2)
+    ),
+    x = "Precio en USD (escala log10)",
+    y = "Densidad"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+Incluso en escala logarítmica la distribución no es perfectamente simétrica. Existe una acumulación de monedas en el rango de centavos hasta pocos dólares, y una cola derecha que corresponde a monedas como Bitcoin con precios en decenas de miles de dólares. Este patrón es consistente con distribuciones power-law observadas en otros sistemas financieros.
+
+## 5.2 Distribución de Capitalización de Mercado
+
+```{r dist_mcap, fig.width=10, fig.height=5, warning=FALSE}
+ggplot(datos, aes(x = mcap)) +
+  geom_histogram(
+    aes(y = after_stat(density)),
+    bins  = 45,
+    fill  = "#16a085",
+    alpha = 0.75,
+    color = "white"
+  ) +
+  geom_density(color = "#e67e22", linewidth = 1, adjust = 1.2) +
+  scale_x_log10(labels = dollar_format(scale = 1e-9, suffix = "B")) +
+  labs(
+    title    = "Distribución de Market Cap (Escala Logarítmica)",
+    subtitle = "En miles de millones de USD",
+    x = "Market Cap (escala log10)",
+    y = "Densidad"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+---
+
+# 6. Estadísticas Descriptivas
+
+```{r estadisticas}
+resumen <- datos %>%
+  summarise(
+    `Media Precio`      = dollar(mean(precio)),
+    `Mediana Precio`    = dollar(median(precio)),
+    `SD Precio`         = dollar(sd(precio)),
+    `Asimetría Precio`  = round(skewness(precio), 3),
+    `Media MCap`        = dollar(mean(mcap), scale = 1e-9, suffix = "B"),
+    `Mediana MCap`      = dollar(median(mcap), scale = 1e-9, suffix = "B"),
+    `SD MCap`           = dollar(sd(mcap), scale = 1e-9, suffix = "B"),
+    `Media Cambio 24h`  = paste0(round(mean(cambio), 2), "%"),
+    `SD Cambio 24h`     = paste0(round(sd(cambio), 2), "%")
+  )
+
+kable(t(resumen), col.names = c("Valor"), caption = "Estadísticas descriptivas principales")
+```
+
+La diferencia entre media y mediana del precio es enorme, lo que confirma la fuerte asimetría. Unos pocos activos con precios muy altos jalan la media hacia arriba, mientras la mayoría de las monedas cotizan en rangos muy bajos.
+
+---
+
+# 7. Concentración del Mercado
+
+```{r concentracion, fig.width=10, fig.height=6}
+datos_ordenados <- datos %>%
+  arrange(desc(mcap)) %>%
+  mutate(
+    ranking             = row_number(),
+    mcap_acumulado      = cumsum(mcap),
+    pct_acumulado       = mcap_acumulado / sum(mcap)
+  )
+
+porcentaje_top10 <- datos_ordenados$pct_acumulado[10] * 100
+porcentaje_top50 <- datos_ordenados$pct_acumulado[50] * 100
+
+ggplot(datos_ordenados, aes(x = ranking, y = pct_acumulado)) +
+  geom_area(fill = "#8e44ad", alpha = 0.2) +
+  geom_line(color = "#8e44ad", linewidth = 1.2) +
+  geom_vline(xintercept = 10, linetype = "dashed", color = "#e74c3c", linewidth = 0.8) +
+  geom_vline(xintercept = 50, linetype = "dashed", color = "#e67e22", linewidth = 0.8) +
+  annotate("text", x = 13, y = 0.35,
+           label = paste0("Top 10\n", round(porcentaje_top10, 1), "%"),
+           color = "#e74c3c", hjust = 0, fontface = "bold", size = 3.8) +
+  annotate("text", x = 53, y = 0.65,
+           label = paste0("Top 50\n", round(porcentaje_top50, 1), "%"),
+           color = "#e67e22", hjust = 0, fontface = "bold", size = 3.8) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title    = "Curva de Concentración del Mercado Cripto",
+    subtitle = "Basada en capitalización de mercado acumulada",
+    x = "Ranking por Market Cap",
+    y = "Porcentaje acumulado del mercado"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r}
+cat("Las 10 primeras criptomonedas representan el", round(porcentaje_top10, 1), "% del mercado total.\n")
+cat("Las 50 primeras representan el", round(porcentaje_top50, 1), "%.\n")
+cat("El resto de las monedas comparte el", round(100 - porcentaje_top50, 1), "% restante.\n")
+```
+
+Esta curva revela un nivel de concentración extremo. Prácticamente el mercado se divide en dos capas muy distintas: una élite de monedas que acapara casi todo el capital, y una larga cola de activos con participación marginal.
+
+---
+
+# 8. Relación Precio vs Capitalización (Interactivo)
+
+```{r scatter_interactivo, fig.width=11, fig.height=7, warning=FALSE}
+p <- ggplot(datos, aes(
+  x    = precio,
+  y    = mcap,
+  color = cambio,
+  size  = volumen,
+  text  = paste0(
+    "<b>", nombre, " (", simbolo, ")</b>",
+    "<br>Precio: ", dollar(precio),
+    "<br>MCap: ", dollar(mcap, scale = 1e-9, suffix = "B"),
+    "<br>Volumen 24h: ", dollar(volumen, scale = 1e-6, suffix = "M"),
+    "<br>Cambio: ", round(cambio, 2), "%"
+  )
+)) +
+  geom_point(alpha = 0.65) +
+  scale_color_gradient2(
+    low      = "#c0392b",
+    mid      = "gray70",
+    high     = "#27ae60",
+    midpoint = 0,
+    name     = "Cambio 24h (%)"
+  ) +
+  scale_size_continuous(range = c(1.5, 9), guide = "none") +
+  scale_x_log10(labels = dollar_format()) +
+  scale_y_log10(labels = dollar_format(scale = 1e-9, suffix = "B")) +
+  labs(
+    title    = "Precio vs Market Cap",
+    subtitle = "Tamaño del punto proporcional al volumen | Pasa el cursor para más detalle",
+    x = "Precio USD (log)",
+    y = "Market Cap en miles de millones (log)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+
+ggplotly(p, tooltip = "text") %>%
+  layout(hoverlabel = list(bgcolor = "white", font = list(size = 12)))
+```
+
+En escala log-log la relación entre precio y capitalización es aproximadamente lineal, lo que sugiere que el mercado valora de forma razonablemente consistente la relación entre el precio unitario del activo y su capitalización total. Sin embargo, hay dispersión considerable, especialmente en el rango de precios bajos donde coexisten monedas con supplies muy distintos.
+
+---
+
+# 9. Análisis de Correlaciones
+
+```{r correlaciones, fig.width=8, fig.height=7, warning=FALSE}
+# Trabajo con log para suavizar los extremos
+datos_log <- datos %>%
+  mutate(
+    log_precio  = log10(precio),
+    log_mcap    = log10(mcap),
+    log_volumen = log10(volumen)
+  ) %>%
+  select(log_precio, log_mcap, log_volumen, cambio)
+
+ggcorr(
+  datos_log,
+  label        = TRUE,
+  label_round  = 2,
+  label_alpha  = TRUE,
+  low          = "#c0392b",
+  mid          = "#ecf0f1",
+  high         = "#2980b9",
+  name         = "Correlación",
+  layout.exp   = 2
+) +
+  labs(
+    title    = "Matriz de Correlaciones",
+    subtitle = "Variables de precio y mcap en escala logarítmica"
+  ) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r}
+round(cor(datos_log, use = "complete.obs"), 3)
+```
+
+La correlación más fuerte es entre log_precio y log_mcap, lo cual tiene sentido porque el market cap es el producto del precio por el supply circulante. El volumen tiene correlación moderada con el market cap, lo que indica que las monedas más grandes también son las más transaccionadas, aunque no de forma perfecta.
+
+---
+
+# 10. Volatilidad por Categoría
+
+```{r volatilidad, fig.width=11, fig.height=6, warning=FALSE}
+# Identifico outliers como los que superan 2.5 SD de su grupo
+datos <- datos %>%
+  group_by(categoria) %>%
+  mutate(
+    media_cambio = mean(cambio),
+    sd_cambio    = sd(cambio),
+    es_outlier   = abs(cambio - media_cambio) > 2.5 * sd_cambio
+  ) %>%
+  ungroup()
+
+ggplot(datos, aes(x = categoria, y = cambio, fill = categoria)) +
+  geom_hline(yintercept = 0, color = "gray60", linetype = "dashed") +
+  geom_violin(alpha = 0.4, color = NA) +
+  geom_boxplot(width = 0.3, alpha = 0.8, outlier.shape = NA) +
+  geom_jitter(
+    data   = filter(datos, es_outlier),
+    color  = "#e74c3c",
+    size   = 2.5,
+    width  = 0.15,
+    alpha  = 0.8
+  ) +
+  geom_text_repel(
+    data        = filter(datos, es_outlier),
+    aes(label   = simbolo),
+    size        = 3,
+    color       = "#c0392b",
+    fontface    = "bold",
+    max.overlaps = 15,
+    box.padding  = 0.4
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title    = "Distribución de Volatilidad por Categoría",
+    subtitle = "Outliers etiquetados en rojo (> 2.5 SD dentro del grupo)",
+    x = "Categoría",
+    y = "Cambio % en 24 horas"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title    = element_text(face = "bold"),
+    legend.position = "none"
+  )
+```
+
+```{r resumen_volatilidad}
+datos %>%
+  group_by(categoria) %>%
+  summarise(
+    n            = n(),
+    media_cambio = round(mean(cambio), 2),
+    sd_cambio    = round(sd(cambio), 2),
+    max_subida   = round(max(cambio), 2),
+    max_bajada   = round(min(cambio), 2),
+    outliers     = sum(es_outlier)
+  ) %>%
+  kable(caption = "Resumen de volatilidad por categoría de mercado")
+```
+
+El patrón es claro: a menor capitalización, mayor volatilidad. Las Small Cap pueden moverse varios cientos de puntos porcentuales en un solo día, mientras las Mega Cap como Bitcoin tienden a tener movimientos mucho más moderados. Esto refleja diferencias en liquidez y en la cantidad de participantes que operan cada activo.
+
+---
+
+# 11. Top Ganadoras y Perdedoras del Día
+
+```{r ganadoras_perdedoras, fig.width=11, fig.height=6}
+extremos <- bind_rows(
+  datos %>% arrange(desc(cambio)) %>% head(10) %>% mutate(tipo = "Top Ganadoras"),
+  datos %>% arrange(cambio) %>% head(10) %>% mutate(tipo = "Top Perdedoras")
+)
+
+ggplot(extremos, aes(
+  x    = reorder(simbolo, cambio),
+  y    = cambio,
+  fill = tipo
+)) +
+  geom_col(alpha = 0.85, width = 0.7) +
+  geom_text(
+    aes(label = paste0(round(cambio, 1), "%")),
+    hjust = ifelse(extremos$cambio >= 0, -0.1, 1.1),
+    size  = 3.2,
+    fontface = "bold"
+  ) +
+  coord_flip() +
+  scale_fill_manual(values = c("Top Ganadoras" = "#27ae60", "Top Perdedoras" = "#e74c3c")) +
+  facet_wrap(~tipo, scales = "free") +
+  labs(
+    title    = "Mayores Movimientos del Día",
+    subtitle = "Top 10 ganadoras y perdedoras por cambio % en 24 horas",
+    x = NULL,
+    y = "Cambio % en 24 horas"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title      = element_text(face = "bold"),
+    legend.position = "none",
+    strip.text      = element_text(face = "bold", size = 12)
+  )
+```
+
+---
+
+# 12. Conclusiones
+
+A partir del análisis exploratorio realizado se pueden extraer las siguientes conclusiones:
+
+**Sobre la estructura del mercado:**
+
+El mercado cripto exhibe una estructura de concentración extrema. Unas pocas monedas (top 10) dominan el grueso del capital total, mientras que la vasta mayoría de los activos tienen una participación casi irrelevante. Esta estructura es típica de sistemas que siguen leyes de potencia (power-law), y se repite tanto en precios como en capitalización.
+
+**Sobre las distribuciones:**
+
+Tanto el precio como el market cap presentan distribuciones con fuerte asimetría positiva. En escala logarítmica las distribuciones se aproximan mejor a la normalidad, lo que sugiere que estas variables tienen una naturaleza multiplicativa. Esto tiene implicancias prácticas: los promedios aritméticos son engañosos y la mediana es más representativa como medida central.
+
+**Sobre las correlaciones:**
+
+La relación entre precio y market cap es fuerte en escala log-log, aunque no perfecta, dado que diferentes monedas tienen supplies totales muy distintos. El volumen tiene correlación moderada con el tamaño del activo, confirmando que liquidez y capitalización van de la mano pero no son lo mismo.
+
+**Sobre la volatilidad:**
+
+La volatilidad tiene una relación inversa clara con el tamaño del activo. Las Small Cap concentran los movimientos más extremos en ambas direcciones, tanto las mayores ganancias como las mayores pérdidas en un día. Las Mega Cap como Bitcoin y Ethereum se comportan de forma más estable, lo que las hace comparativamente más predecibles aunque siguen siendo mucho más volátiles que activos tradicionales.
+
+**Reflexión final:**
+
+El mercado cripto no es un mercado eficiente en el sentido clásico. La concentración extrema, la volatilidad diferencial por tamaño y los movimientos diarios de magnitudes imposibles en mercados tradicionales apuntan a un ecosistema aún inmaduro, donde el precio es altamente sensible a factores externos y donde la especulación juega un rol central.
+
+---
+
+# Referencias
+
+- Wilkins, D. (2023). *treemapify: Draw Treemaps in ggplot2*. https://wilkox.org/treemapify/
+- CryptoCompare API. https://min-api.cryptocompare.com/
+- Finviz Market Map. https://www.finviz.com/map.ashx
+
+---
+
+*Datos obtenidos de CryptoCompare API | Análisis realizado en R*
